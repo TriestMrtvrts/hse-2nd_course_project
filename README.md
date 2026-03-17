@@ -155,14 +155,3 @@ experiments/results/retrieval_eval_summary.json
 - distance для найденных чанков;
 - исходные файлы, использованные как источник.
 
-Также по-прежнему доступна slash-команда:
-
-```bash
-/eval <вопрос>
-```
-
-или
-
-```bash
-/eval <id_из_question_pool.csv>
-```
