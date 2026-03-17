@@ -1,0 +1,227 @@
+import sqlite3
+import os
+import json
+import re
+from typing import List
+
+import sqlite_vec
+from sqlite_vec import serialize_float32
+from tqdm import tqdm
+from sentence_transformers import SentenceTransformer
+from docling.document_converter import DocumentConverter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+
+from anything_to_md import convert_file_to_markdown  # Imported from anything_to_markdown.py
+
+# Constants
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SOURCE_DIR = os.path.join(BASE_DIR, "data")
+OUTPUT_DIR = os.path.join(BASE_DIR, "converted_md")
+DB_NAME = os.path.join(BASE_DIR, "hse.sqlite3")
+EMBEDDING_MODEL = 'deepvk/USER-bge-m3'
+
+
+def extract_header_from_text(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+        if stripped.startswith("**") and stripped.endswith("**"):
+            return stripped.strip("* ").strip()
+        if re.match(r"^\d+(\.\d+)*\.?\s+\*\*.+\*\*$", stripped):
+            return re.sub(r"^\d+(\.\d+)*\.?\s+", "", stripped).strip("* ").strip()
+        if re.match(r"^\d+(\.\d+)*\.?\s+\S+", stripped):
+            return stripped
+    return "Full Document"
+
+def create_chunks(data: str) -> List[str]:
+    headers_to_split_on = [
+        ("#", "Header 1"),
+        ("##", "Header 2"),
+        ("###", "Header 3"),
+    ]
+    markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on, strip_headers=False)
+    md_header_splits = markdown_splitter.split_text(data)
+
+    chunk_size = 2048
+    chunk_overlap = 512
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap
+    )
+    splits = text_splitter.split_documents(md_header_splits)
+    return splits
+
+def setup_database(db):
+    db.enable_load_extension(True)
+    sqlite_vec.load(db)
+    db.enable_load_extension(False)
+
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS documents(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT,
+        meta_data_h TEXT,
+        meta_data_source TEXT
+    );
+    """)
+
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS chunks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id INTEGER,
+        text TEXT,
+        meta_data_h TEXT,
+        meta_data_source TEXT,
+        FOREIGN KEY(document_id) REFERENCES documents(id)
+    );
+    """)
+    db.commit()
+
+def create_embeddings_table(db, embedding_size):
+    db.execute(f"""
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings USING vec0(
+        id INTEGER PRIMARY KEY,
+        embedding FLOAT[{embedding_size}]
+    );
+    """)
+    db.commit()
+
+def save_chunks(db, chunks: List[str], meta_data: List[dict], model, document_id: int):
+    try:
+        chunk_embeddings = list(model.encode(chunks, normalize_embeddings=True))
+        for chunk, embedding, meta in zip(chunks, chunk_embeddings, meta_data):
+            result = db.execute(
+                "INSERT INTO chunks(document_id, text, meta_data_h, meta_data_source) VALUES(?, ?, ?, ?)", 
+                (
+                    document_id,
+                    chunk,
+                    meta.get("header", "Full Document"),
+                    meta.get("source", ""),
+                )
+            )
+            chunk_id = result.lastrowid
+            db.execute(
+                "INSERT INTO chunk_embeddings(id, embedding) VALUES (?, ?)",
+                [chunk_id, serialize_float32(embedding)],
+            )
+        db.commit()
+    except Exception as exc:
+        print(f"Failed to save chunks for document_id={document_id}: {exc}")
+        raise
+
+def main():
+    try:
+        # Directory containing files to process
+        input_dir = SOURCE_DIR
+        output_dir = OUTPUT_DIR
+
+        # Ensure the output directory exists
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Initialize SentenceTransformer model
+        model = SentenceTransformer(EMBEDDING_MODEL)
+
+        # Setup database
+        db_path = os.path.abspath(DB_NAME)
+        db = sqlite3.connect(DB_NAME)
+        setup_database(db)
+
+        # Process each file in the input directory
+        for root, _, files in os.walk(input_dir):
+            visible_files = [file for file in files if not file.startswith('.')]
+            for file in tqdm(visible_files, desc="Processing files"):
+                input_path = os.path.join(root, file)
+                relative_path = os.path.relpath(root, input_dir)
+                output_path_dir = os.path.join(output_dir, relative_path)
+                if not os.path.exists(output_path_dir):
+                    os.makedirs(output_path_dir)
+
+                output_file = os.path.splitext(file)[0] + '.md'
+                output_path = os.path.join(output_path_dir, output_file)
+
+                # Convert file to markdown
+                try:
+                    convert_file_to_markdown(input_path, output_path)
+                except Exception as exc:
+                    print(f"Failed to convert {input_path}: {exc}")
+                    continue
+
+                # Read markdown file
+                try:
+                    with open(output_path, "r", encoding='utf-8') as f:
+                        data = f.read()
+                except Exception as exc:
+                    print(f"Failed to read {output_path}: {exc}")
+                    continue
+
+                # Create chunks
+                splits = create_chunks(data)
+
+                # Create embeddings
+                try:
+                    embeddings = model.encode([chunk.page_content for chunk in splits], normalize_embeddings=True)
+                except Exception as exc:
+                    print(f"Failed to create embeddings for {input_path}: {exc}")
+                    continue
+
+                # Create embeddings table if not exists
+                if root == input_dir and file == visible_files[0]:  # Assuming embedding size is consistent
+                    if len(embeddings) > 0 and hasattr(embeddings[0], 'shape'):
+                        embedding_size = embeddings[0].shape[0]
+                    else:
+                        embedding_size = len(embeddings[0])
+                    create_embeddings_table(db, embedding_size)
+
+                # Insert document and get document_id
+                meta_document = {
+                    "source": input_path,
+                    "description": "Full Document"
+                }
+                try:
+                    cursor = db.execute(
+                        "INSERT INTO documents(text, meta_data_h, meta_data_source) VALUES(?, ?, ?)", 
+                        (
+                            data,
+                            meta_document.get("description", "Full Document"),
+                            meta_document.get("source", ""),
+                        )
+                    )
+                    document_id = cursor.lastrowid
+                    db.commit()
+                except Exception as exc:
+                    print(f"Failed to insert document {input_path}: {exc}")
+                    continue
+
+                # Prepare metadata for chunks
+                try:
+                    chunks_text = [chunk.page_content for chunk in splits]
+                    chunks_meta = []
+                    for chunk in splits:
+                        header = (
+                            chunk.metadata.get("Header 3")
+                            or chunk.metadata.get("Header 2")
+                            or chunk.metadata.get("Header 1")
+                            or chunk.metadata.get("header")
+                            or extract_header_from_text(chunk.page_content)
+                        )
+                        chunks_meta.append({"source": input_path, "header": header})
+                except Exception as exc:
+                    print(f"Failed to prepare chunks for {input_path}: {exc}")
+                    continue
+
+                # Save chunks and their embeddings
+                save_chunks(db, chunks_text, chunks_meta, model, document_id)
+                print('vse top4ik')
+
+    except Exception as exc:
+        print(f"prep_rag_data failed: {exc}")
+        raise
+    finally:
+        if 'db' in locals():
+            db.close()
+
+if __name__ == "__main__":
+    main()
