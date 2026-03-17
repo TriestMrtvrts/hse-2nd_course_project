@@ -51,7 +51,6 @@ RAG_CODE/rag/hse.sqlite3
 Если вы добавили или заменили документы и хотите собрать базу заново:
 
 ```bash
-cd /Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE
 source .venv/bin/activate
 rm -f RAG_CODE/rag/hse.sqlite3
 python3 RAG_CODE/rag/prep_rag_data.py
@@ -62,7 +61,6 @@ python3 RAG_CODE/rag/prep_rag_data.py
 Если нужен режим отслеживания новых документов в папке `data/`:
 
 ```bash
-cd /Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE
 source .venv/bin/activate
 python3 update_db.py
 ```
@@ -100,7 +98,6 @@ LLM_MODEL=llama3.1:8b
 Перед запуском задайте Telegram-токен и параметры LLM:
 
 ```bash
-cd /Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE
 source .venv/bin/activate
 
 export BOT_TOKEN='YOUR_TELEGRAM_BOT_TOKEN'
@@ -127,7 +124,6 @@ experiments/question_pool.csv
 Чтобы прогнать автоматическую оценку retrieval:
 
 ```bash
-cd /Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE
 source .venv/bin/activate
 python3 experiments/evaluate_retrieval.py
 ```
