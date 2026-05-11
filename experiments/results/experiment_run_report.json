@@ -1,0 +1,14 @@
+{
+  "retrieval": {
+    "best_validation_experiment": "baseline_dense_validation",
+    "best_test_experiment": "baseline_dense_test",
+    "summary_csv": "experiments/results/retrieval_experiment_summary.csv",
+    "detailed_csv": "experiments/results/retrieval_experiment_details.csv",
+    "boundary_csv": "experiments/results/boundary_retrieval_analysis.csv"
+  },
+  "generation": {
+    "status": "completed",
+    "summary_csv": "experiments/results/generation_experiment_summary.csv",
+    "detailed_csv": "experiments/results/generation_experiment_details.csv"
+  }
+}

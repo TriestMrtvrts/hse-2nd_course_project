@@ -1,0 +1,19 @@
+{
+  "evaluated_questions": 30,
+  "skipped_questions": 7,
+  "document_hit@1": 0.9,
+  "document_hit@3": 0.9333333333333333,
+  "mrr": 0.9166666666666666,
+  "by_type.exact.document_hit@1": 0.9090909090909091,
+  "by_type.exact.document_hit@3": 0.9090909090909091,
+  "by_type.exact.mrr": 0.9090909090909091,
+  "by_type.paraphrase.document_hit@1": 0.8888888888888888,
+  "by_type.paraphrase.document_hit@3": 1.0,
+  "by_type.paraphrase.mrr": 0.9444444444444444,
+  "by_type.abbreviation.document_hit@1": 0.8,
+  "by_type.abbreviation.document_hit@3": 0.8,
+  "by_type.abbreviation.mrr": 0.8,
+  "by_type.typo.document_hit@1": 1.0,
+  "by_type.typo.document_hit@3": 1.0,
+  "by_type.typo.mrr": 1.0
+}

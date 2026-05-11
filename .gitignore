@@ -1,0 +1,15 @@
+.DS_Store
+
+.venv/
+.hf_models/
+
+__pycache__/
+*/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+log.sqlite3
+RAG_CODE/rag/hse.sqlite3
+
+*.log

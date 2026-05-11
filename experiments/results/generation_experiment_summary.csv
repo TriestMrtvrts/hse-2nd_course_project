@@ -1,0 +1,4 @@
+experiment,questions,failed_items,rouge_l_f1,grounding_overlap,citation_rate
+extractive_top1_generation,15,0,0.18538068367519356,0.950487956076182,1.0
+llm_strict_generation,15,0,0.40911170748443765,0.7986762330738643,0.0
+llm_cited_generation,15,0,0.17996496294523992,0.8644552757761053,0.8

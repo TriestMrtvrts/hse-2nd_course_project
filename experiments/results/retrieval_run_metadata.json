@@ -1,0 +1,7 @@
+{
+  "best_validation_experiment": "baseline_dense_validation",
+  "best_test_experiment": "baseline_dense_test",
+  "summary_csv": "/Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE/experiments/results/retrieval_experiment_summary.csv",
+  "detailed_csv": "/Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE/experiments/results/retrieval_experiment_details.csv",
+  "boundary_csv": "/Users/iangustov_tsm/Downloads/CP-DB_SZFO_2024-main_HSE/experiments/results/boundary_retrieval_analysis.csv"
+}
