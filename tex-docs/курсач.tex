@@ -1,0 +1,369 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{setspace}
+\usepackage{caption}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\geometry{margin=2.2cm}
+\setlength{\emergencystretch}{3em}
+\setstretch{1.15}
+\captionsetup{labelsep=period}
+\setlist[itemize]{nosep}
+\setlist[enumerate]{nosep}
+\setdefaultlanguage{russian}
+\setotherlanguage{english}
+\setmainfont{Times New Roman}
+\setmonofont{Courier New}
+\newfontfamily\cyrillicfont{Times New Roman}
+\newfontfamily\cyrillicfontsf{Times New Roman}
+\newfontfamily\cyrillicfonttt{Courier New}
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+
+{\normalsize ПРАВИТЕЛЬСТВО РОССИЙСКОЙ ФЕДЕРАЦИИ\\
+ФГАОУ ВО НАЦИОНАЛЬНЫЙ ИССЛЕДОВАТЕЛЬСКИЙ УНИВЕРСИТЕТ\\
+\textbf{«ВЫСШАЯ ШКОЛА ЭКОНОМИКИ»}}\\[1.3cm]
+
+{\normalsize Факультет компьютерных наук}\\
+{\normalsize Образовательная программа «Прикладная математика и информатика»}\\[2.5cm]
+
+{\Large \textbf{Отчет о программном проекте на тему:}}\\[0.8cm]
+
+{\normalsize \textbf{Разработка Retrieval-Augmented системы\\
+для справочного чат-бота образовательной организации}}\\[2.7cm]
+
+\begin{flushleft}
+\textbf{Выполнил:}\\
+
+студент группы БПМИ2411\\
+Я.\,Густов\\[0.8cm]
+
+(дата)\\[1.0cm]
+
+\textbf{Принял руководитель проекта:}\\
+Д.\,Андреева\\
+руководитель проекта\\
+Факультета компьютерных наук НИУ ВШЭ
+\end{flushleft}
+
+\vfill
+{\normalsize Москва, 2026}
+
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{Введение}
+
+Цифровой справочный сервис для образовательной организации должен одновременно быть быстрым, понятным и фактически точным. Для нормативных вопросов это особенно важно: пользователь ожидает краткий ответ на естественном языке, но при этом ответ должен опираться на официальный документ, а не на вероятностную память языковой модели. Поэтому в проекте была выбрана архитектура Retrieval-Augmented Generation (RAG), где генерация ответа отделена от поиска источника, а качество retrieval и generation оценивается раздельно.
+
+В рамках работы был реализован чат-бот по нормативным документам НИУ ВШЭ, включающий конвертацию документов в markdown, предобработку, чанкирование, dense и sparse retrieval, reranking, генерацию ответа и Telegram-интерфейс.
+
+\section{Постановка задачи и design doc}
+
+Целевой пользователь системы --- студент или абитуриент, которому нужно быстро найти ответ по длинному нормативному документу без ручного чтения pdf/docx-файла. Бизнес-цели проекта состоят в сокращении времени поиска ответа, снижении нагрузки на сотрудников, отвечающих на типовые вопросы, и повышении прозрачности ответа за счёт явной привязки к источнику.
+
+Технические цели проекта:
+\begin{enumerate}
+    \item построить воспроизводимый RAG-конвейер для документов ВШЭ;
+    \item обеспечить устойчивый retrieval на точных, переформулированных и шумных запросах;
+    \item отдельно оценивать retrieval и generation;
+    \item подготовить инфраструктуру для сравнения предобработки, чанкирования, embedders, sparse/dense retrieval и reranking;
+    \item проверить, даёт ли agentic-подход выигрыш на пограничных вопросах.
+\end{enumerate}
+
+\section{Обзор литературы}
+
+RAG-подходы позволяют опираться на внешний корпус документов и тем самым снижать зависимость ответа от параметрической памяти LLM~\cite{lewis2020rag}. Для retrieval-задач широко используются bi-encoder эмбеддинги семейства Sentence-BERT~\cite{reimers2019sentencebert}. При этом dense retrieval не всегда устойчив к exact-match сигналам, аббревиатурам и редким формулировкам, поэтому на практике его часто сравнивают или комбинируют с sparse-поиском семейства BM25~\cite{robertson1994bm25}. Для длинных документов важным оказывается не только выбор embedder, но и способ разбиения документа на фрагменты, потому что качество итогового ответа сильно зависит от того, какой именно кусок текста оказался в top-$k$ выдаче.
+
+\section{Архитектура системы}
+
+Система состоит из трёх слоёв:
+\begin{enumerate}
+    \item Подготовка данных. Документы из \path{RAG_CODE/rag/data/} конвертируются в markdown, после чего к ним применяется предобработка и чанкирование.
+    \item Retrieval-слой. Для чанков строятся векторные представления, после чего сравниваются dense, BM25 и ensemble-стратегии поиска. Поверх кандидатов может применяться reranking.
+    \item Продуктовый интерфейс. Telegram-бот позволяет задавать вопрос, получать ответ и при необходимости видеть документы-источники.
+\end{enumerate}
+
+В проекте использовались два основных метода чанкирования. \textbf{Plain recursive} разбивает весь документ как единый текст: на вход рекурсивному splitter'у подаётся полный markdown-файл, и он режется по стандартным разделителям до заданного лимита \texttt{chunk\_size} с перекрытием \texttt{chunk\_overlap}. \textbf{Header-aware recursive} работает в два шага: сначала документ делится по markdown-заголовкам или нумерованным секциям, затем каждая секция дочанкивается тем же recursive splitter'ом. Благодаря этому во втором режиме сохраняется привязка фрагмента к конкретному разделу документа, что важно для интерпретируемости ответа.
+
+Для базовой конфигурации после предобработки и header-aware чанкирования корпус содержал 348 чанков: 146 из ПОПАТКУС, 58 из ПВРО 2024 и 144 из устава.
+
+\section{Датасеты и метрики}
+
+\subsection{Retrieval-набор}
+
+Основной evaluation set хранится в \path{experiments/question_pool.csv}. Он содержит 60 вопросов:
+\begin{itemize}
+    \item 24 вопроса в подвыборке \texttt{validation};
+    \item 30 вопросов в подвыборке \texttt{test};
+    \item 6 пограничных вопросов в подвыборке \texttt{analysis}.
+\end{itemize}
+
+Автоматически оцениваются 54 вопроса, ещё 6 используются только для качественного разбора. В набор вошли вопросы по трём документам: ПОПАТКУС, ПВРО 2024 и \texttt{Ustav\_01.02.2016-2}. Для каждого вопроса размечены ожидаемый документ, ожидаемый раздел, тип вопроса, сложность и режим оценки. Это позволяет считать как doc-level, так и section-level метрики. Расширение набора с 30 до 54 автоматически оцениваемых вопросов было важно для того, чтобы различия между конфигурациями не выглядели случайными.
+
+\subsection{Generation-набор}
+
+Для генерации был собран отдельный файл \path{experiments/generation_eval_set.csv} из 15 вопросов с краткими \texttt{reference answers}. Этот набор покрывает все три документа и нужен не для retrieval, а для оценки того, насколько итоговый ответ близок к эталону и насколько он grounded в извлечённом контексте.
+
+\subsection{Retrieval-метрики}
+
+В retrieval-экспериментах использовались:
+\begin{itemize}
+    \item document Hit@1;
+    \item document Hit@3;
+    \item MRR;
+    \item nDCG@3;
+    \item section Hit@1 и section Hit@3.
+\end{itemize}
+
+Doc-level метрики на таком маленьком корпусе быстро достигают потолка, поэтому section-level метрики оказываются более чувствительными к качеству чанкирования, структуры индекса и reranking.
+
+\subsection{Generation-метрики}
+
+Для генерации использовались три автоматические метрики:
+\begin{itemize}
+    \item ROUGE-L F1 по отношению к краткому эталонному ответу;
+    \item grounding overlap --- доля содержательных токенов ответа, присутствующих в retrieval-контексте;
+    \item citation rate --- доля ответов, в которых модель реально оставила ссылку на источник в требуемом формате.
+\end{itemize}
+
+Такой набор позволяет развести три свойства ответа: близость к reference answer, степень опоры на контекст и способность модели явно цитировать источник.
+
+\section{Эксперименты и результаты}
+
+\subsection{Предобработка}
+
+Сравнивались два режима: \texttt{raw} и \texttt{clean}. В режиме \texttt{clean} удалялись markdown-артефакты, footnotes, boilerplate и служебные блоки.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+Конфигурация & Hit@1 & Hit@3 & MRR & Sec@1 & Sec@3 \\
+\midrule
+Raw + dense & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+Clean + dense & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+\bottomrule
+\end{tabular}
+\caption{Сравнение предобработки на validation}
+\end{table}
+
+На данном корпусе очистка не изменила ни doc-level, ни section-level качество. Следовательно, её польза здесь состоит не в росте метрик, а в повышении воспроизводимости индекса и уменьшении служебного шума.
+
+\subsection{Размер чанка и метод чанкирования}
+
+В экспериментах по размеру чанка варьировались пары \path{chunk_size/chunk_overlap}: 768/128, 1024/256 и 1536/384. Во всех случаях использовался один и тот же embedder и один и тот же dense retrieval-контур, чтобы изменение метрик объяснялось именно структурой индекса.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{5.4cm}ccccc}
+\toprule
+Размер чанка & Hit@1 & Hit@3 & MRR & Sec@1 & Sec@3 \\
+\midrule
+768 / 128 & 0.9583 & 1.0000 & 0.9792 & 0.7500 & 0.8750 \\
+1024 / 256 & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+1536 / 384 & 0.9167 & 0.9583 & 0.9458 & 0.7083 & 0.7917 \\
+\bottomrule
+\end{tabular}
+\caption{Сравнение размеров чанка на validation}
+\end{table}
+
+Под \textbf{методом чанкирования} в этой работе понимается не размер фрагмента, а логика его построения:
+\begin{itemize}
+    \item \textbf{Plain recursive}: весь markdown-документ подаётся как единый текст, после чего рекурсивный splitter делит его на куски по стандартным разделителям без сохранения границ секций.
+    \item \textbf{Header-aware recursive}: документ сначала делится по markdown-заголовкам или нумерованным разделам, а затем каждая секция отдельно режется recursive splitter'ом с тем же размером и overlap. В итоговом чанке сохраняется метадата исходного раздела.
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+Метод чанкирования & Hit@1 & Hit@3 & MRR & Sec@1 & Sec@3 \\
+\midrule
+Plain recursive & 1.0000 & 1.0000 & 1.0000 & 0.2500 & 0.2500 \\
+Header-aware recursive & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+\bottomrule
+\end{tabular}
+\caption{Сравнение методов чанкирования на validation}
+\end{table}
+
+Получилось важное наблюдение: doc-level метрики одинаковы, но plain recursive почти разрушает section-level интерпретируемость. Для нормативного чат-бота header-aware чанкирование существенно полезнее, потому что оно лучше сохраняет структуру источника и снижает смешивание соседних правил внутри одного фрагмента.
+
+\subsection{Сравнение embedders}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+Embedder & Hit@1 & Hit@3 & MRR & Sec@1 & Sec@3 \\
+\midrule
+\path{deepvk/USER-bge-m3} & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+\path{intfloat/multilingual-e5-small} & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+\path{paraphrase-multilingual-MiniLM-L12-v2} & 0.7917 & 0.9583 & 0.8833 & 0.5000 & 0.6250 \\
+\bottomrule
+\end{tabular}
+\caption{Сравнение embedders на validation}
+\end{table}
+
+Наиболее слабый результат показал MiniLM, особенно на noisy и section-sensitive кейсах. \path{deepvk/USER-bge-m3} и \path{multilingual-e5-small} дали одинаковый потолок по doc-level метрикам, поэтому в качестве основного embedder был оставлен \path{deepvk/USER-bge-m3} как уже интегрированный в продуктовый контур.
+
+\subsection{Dense, sparse, ensemble и reranking}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+Retriever & Hit@1 & Hit@3 & MRR & Sec@1 & Sec@3 \\
+\midrule
+Dense & 1.0000 & 1.0000 & 1.0000 & 0.7917 & 0.8333 \\
+BM25 & 0.9167 & 0.9583 & 0.9458 & 0.5000 & 0.7083 \\
+Ensemble (RRF) & 1.0000 & 1.0000 & 1.0000 & 0.7083 & 0.8750 \\
+Ensemble + rerank & 1.0000 & 1.0000 & 1.0000 & 0.7500 & 0.7917 \\
+\bottomrule
+\end{tabular}
+\caption{Сравнение retrieval-стратегий на validation}
+\end{table}
+
+BM25 уступил dense retrieval на текущем корпусе, но оказался полезен как дополнительный exact-match сигнал в ансамбле. Ensemble поднял section Hit@3 до 0.8750, однако не улучшил doc-level метрики относительно сильного dense baseline. Reranking в этой конфигурации не дал выигрыша и даже немного ухудшил section-level показатели, что можно объяснить маленьким корпусом и уже достигнутым потолком по doc-level качеству.
+
+\subsection{Финальная проверка на test}
+
+Лучшая по критерию простоты и doc-level качества конфигурация --- dense retrieval с \path{deepvk/USER-bge-m3}, header-aware чанкированием и размером чанка 1024/256 --- была проверена на отложенной \texttt{test}-подвыборке.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccccc}
+\toprule
+Конфигурация & Hit@1 & Hit@3 & MRR & Sec@1 & Sec@3 \\
+\midrule
+Baseline dense on test & 1.0000 & 1.0000 & 1.0000 & 0.7333 & 0.8333 \\
+\bottomrule
+\end{tabular}
+\caption{Финальная retrieval-оценка на test}
+\end{table}
+
+Итог показывает, что retrieval-компонент надёжен на уровне правильного документа, но section-level точность остаётся заметно ниже единицы. Для нормативного чат-бота это важно, потому что пользователю нужен не просто правильный документ, а максимально точный раздел внутри него.
+
+\subsection{Generation}
+
+В generation-экспериментах сравнивались три режима:
+\begin{itemize}
+    \item \texttt{extractive\_top1}: ответ формируется из лучшего найденного фрагмента;
+    \item \texttt{llm\_strict}: короткий grounded-ответ без обязательных ссылок;
+    \item \texttt{llm\_cited}: grounded-ответ с требованием явных ссылок на источник.
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Режим генерации & Failed & ROUGE-L F1 & Grounding & Citation rate \\
+\midrule
+Extractive top-1 & 0 & 0.1854 & 0.9505 & 1.0000 \\
+LLM strict & 0 & 0.4091 & 0.7987 & 0.0000 \\
+LLM cited & 0 & 0.1800 & 0.8645 & 0.8000 \\
+\bottomrule
+\end{tabular}
+\caption{Generation-оценка на наборе из 15 вопросов}
+\end{table}
+
+Extractive baseline оказался самым grounded, но самым слабым по качеству формулировки. Режим \texttt{llm\_strict} показал лучшую близость к reference answers, то есть лучше суммировал найденный контекст. Режим \texttt{llm\_cited} действительно научился оставлять ссылки в большинстве ответов, но потерял часть качества по ROUGE-L. Для продукта это означает, что строгая генерация без принудительного citation-format пока выглядит лучшим компромиссом, а citation-mode полезен как более прозрачный, но и более тяжёлый режим.
+
+\subsection{Pilot AgenticRAG}
+
+Дополнительно был реализован pilot AgenticRAG-контур для 6 пограничных вопросов из split \texttt{analysis}. Агент порождал 2--3 поисковых подзапроса, выполнял retrieval по каждому из них, затем объединял кандидатов через reciprocal rank fusion и формировал ответ с указанием источников.
+
+Качественный анализ показал смешанный результат:
+\begin{itemize}
+    \item на вопросах про нарушения во время экзамена и неявку на аттестацию агент действительно расширял охват контекста и подтягивал фрагменты из нескольких разделов;
+    \item на вопросе про шпаргалки агент сгенерировал нерелевантный подзапрос про другой университет, что ухудшило retrieval;
+    \item в целом AgenticRAG повысил покрытие неоднозначных кейсов, но добавил новую точку отказа --- качество самих подзапросов.
+\end{itemize}
+
+Следовательно, agentic-подход в данной задаче выглядит перспективным именно для boundary-вопросов, но пока не должен заменять базовый retrieval-контур.
+
+\section{Обсуждение результатов}
+
+С точки зрения бизнес-целей проект можно считать успешным. Для типовых вопросов по трём документам система стабильно находит правильный документ, а generation-компонент способен формировать пригодный для пользователя краткий ответ. С точки зрения технических целей также удалось выполнить ключевые пункты: retrieval и generation оцениваются отдельно, есть воспроизводимый экспериментальный контур, датасеты описаны и расширены, а различия между конфигурациями представлены в табличном виде.
+
+Однако у работы есть и ограничения. Во-первых, doc-level метрики уже упираются в потолок, поэтому для следующего этапа важнее наращивать сложность корпуса, количество документов и multi-document сценарии, чем ещё раз сравнивать сильные dense-модели на тех же трёх источниках. Во-вторых, generation-метрики остаются эвристическими: они полезны для быстрой автоматической проверки, но не заменяют экспертную ручную валидацию фактуальности.
+
+\section{Заключение}
+
+В работе была реализована и оценена retrieval-augmented система для вопросов по нормативным документам НИУ ВШЭ. В отличие от промежуточной версии проекта, итоговый контур включает не только базовый dense retrieval, но и сравнение предобработки, размеров и методов чанкирования, нескольких embedders, dense/sparse/ensemble retrieval, reranking, generation и pilot AgenticRAG.
+
+Основные выводы следующие:
+\begin{enumerate}
+    \item На текущем корпусе dense retrieval с \path{deepvk/USER-bge-m3} и header-aware чанкированием уже достигает потолка по doc-level метрикам.
+    \item Размер чанка влияет на качество: конфигурация 1024/256 оказалась лучшей среди протестированных.
+    \item Plain recursive чанкирование непригодно для задач, где важна интерпретируемость и привязка к разделу.
+    \item BM25 полезен как дополнительный сигнал, но не превосходит сильный dense baseline на данном корпусе.
+    \item В generation extractive baseline даёт максимальную groundedness, а LLM strict --- лучший компромисс между качеством формулировки и привязкой к контексту.
+    \item AgenticRAG потенциально полезен на boundary-вопросах, но требует более надёжной генерации подзапросов.
+\end{enumerate}
+
+\section{Перспективы дальнейшей разработки}
+
+Следующим этапом развития проекта должно стать не только количественное расширение корпуса, но и усложнение самих пользовательских сценариев. Текущая версия системы хорошо работает на типовых вопросах по трём документам, однако дальнейшее развитие должно быть направлено на повышение устойчивости retrieval в multi-document и неоднозначных кейсах, а также на более строгую валидацию generation-компонента.
+
+Ключевые направления дальнейшей разработки:
+\begin{itemize}
+    \item расширить корпус документов и gold set;
+    \item добавить более сложные multi-hop и multi-document вопросы;
+    \item провести ручную экспертную оценку generation;
+    \item исследовать более сильные multilingual rerankers;
+    \item доработать AgenticRAG и при необходимости сравнить его с graph-based представлением корпуса.
+\end{itemize}
+
+\section{Использование ИИ}
+
+При подготовке проекта и отчёта использовались инструменты искусственного интеллекта, в первую очередь ChatGPT/Codex от OpenAI. Они применялись в двух ролях. Во-первых, как вспомогательный инструмент при работе с кодом: для рефакторинга экспериментальных скриптов, поиска и исправления ошибок, а также помощи в воспроизведении retrieval- и generation-экспериментов. Во-вторых, как инструмент редакторской поддержки: для улучшения структуры текста, формулировок и устранения технических проблем при сборке \LaTeX-документа.
+
+При этом постановка исследовательской задачи, формирование датасетов, выбор метрик, дизайн экспериментов, проверка и интерпретация результатов, а также итоговые выводы были выполнены мной самостоятельно и дополнительно вручную проверены перед включением в финальную версию отчёта.
+
+\begin{thebibliography}{9}
+
+\bibitem{reimers2019sentencebert}
+N.~Reimers, I.~Gurevych.
+\newblock Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks.
+\newblock In \emph{Proceedings of EMNLP-IJCNLP}, 2019.
+
+\bibitem{lewis2020rag}
+P.~Lewis et al.
+\newblock Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2020.
+
+\bibitem{robertson1994bm25}
+S.~Robertson, S.~Walker.
+\newblock Some simple effective approximations to the 2-Poisson model for probabilistic weighted retrieval.
+\newblock In \emph{Proceedings of SIGIR}, 1994.
+
+\bibitem{izacard2023atlas}
+G.~Izacard et al.
+\newblock Atlas: Few-shot Learning with Retrieval Augmented Language Models.
+\newblock \emph{Journal of Machine Learning Research}, 2023.
+
+\end{thebibliography}
+
+\end{document}
